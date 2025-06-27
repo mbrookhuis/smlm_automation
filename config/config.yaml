@@ -1,0 +1,43 @@
+main:
+  scc_user:
+  scc_password:
+  admin_user:
+  admin_password:
+  script_user:
+  script_password:
+  timeout: 1200
+  ssl_certificate_check: True  # change to False when using self-signed certificates
+
+scc:
+  organisation_credentials:
+    <id>: <password>
+  channels:
+    <pool 1>:
+      - <channel 1>
+      - <channel 2>
+    <pool 2>:
+      - <channel 1>
+      - <channel 2>
+
+
+users:
+  delete_user_not_listed: True
+  update_user: True
+  <user-name_1>:
+    password:
+    pam:
+    first_name:
+    last_name:
+    mail_address:
+    role:        # list: satellite_admin, org_admin, channel_admin, config_admin, system_group_admin, or activation_key_admin
+      -
+  <user-name_2>:
+    password:
+    pam:
+    first_name:
+    last_name:
+    mail_address:
+    role:        # list: satellite_admin, org_admin, channel_admin, config_admin, system_group_admin, or activation_key_admin
+      -
+
+
