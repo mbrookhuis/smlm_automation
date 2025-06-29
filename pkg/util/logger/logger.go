@@ -1,162 +1,156 @@
-// Package logger - logging configuration
-package logger
+package util
 
 import (
 	"fmt"
-	"net/url"
-
+	"io"
+	"os"
 	"strings"
-	"time"
+	"sync"
 
-	"github.com/pkg/errors"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
+	"github.com/sirupsen/logrus"
+	"smlm_automation/pkg/config" // Adjust import path
 )
 
-// Config - configuration for log entries
-type Config struct {
-	Level              string `envconfig:"LOG_LEVEL"`
-	TimestampFormat    string `envconfig:"LOG_TIMESTAMP_FORMAT"`
-	StdoutEnabled      bool   `envconfig:"LOG_STDOUT_ENABLED"`
-	FilePath           string `envconfig:"LOG_FILE"`
-	MaxSize            int    `envconfig:"LOG_FILE_MAX_SIZE"`
-	MaxAge             int    `envconfig:"LOG_FILE_MAX_AGE"`
-	CompressionEnabled bool   `envconfig:"LOG_COMPRESSION_ENABLED"`
-	StacktraceEnabled  bool   `envconfig:"LOG_STACKTRACE_ENABLED"`
-	ServiceName        string `envconfig:"SERVICE_NAME"`
-	EnableFileLogs     bool   `envconfig:"LOG_ENABLE_FILE"`
-}
+// Logger is the application's central logger.
+var Logger *logrus.Logger
+var once sync.Once
 
-// Default - logging configuration
-//
-// param: loglevel
-// return: zap.logger
-func Default(loglevel string) *zap.Logger {
-	zapConfig := zap.NewProductionConfig()
-	zapConfig.OutputPaths = []string{"stdout"}
-	zapConfig.DisableStacktrace = true
-	zapConfig.Sampling = nil
-	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+// InitLogger initializes the global logger based on the application configuration.
+func InitLogger() {
+	once.Do(func() {
+		Logger = logrus.New()
+		Logger.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp: true,
+		})
 
-	logger, _ := zapConfig.Build()
-	err := logger.Sync()
-	if err != nil {
-		fmt.Printf("error (but can be ignored normally): %v", err)
-	}
-	err = zapConfig.Level.UnmarshalText([]byte(loglevel))
-	if err != nil {
-		return nil
-	}
-	return logger
-}
-
-// lumberjackSink - logger data
-type lumberjackSink struct {
-	*lumberjack.Logger
-}
-
-// Sync implements zap.Sink
-//
-// return: error
-func (lumberjackSink) Sync() error { return nil }
-
-// NewConfig - create new logger config
-//
-// param: config
-// return: zap.config
-// return: error
-func NewConfig(config *Config) (*zap.Config, error) {
-	zapConfig := zap.NewProductionConfig()
-	zapConfig.Sampling = nil
-	zapConfig.DisableStacktrace = !config.StacktraceEnabled
-
-	zapConfig.OutputPaths = make([]string, 0)
-
-	if config.EnableFileLogs {
-		zapConfig.OutputPaths = append(zapConfig.OutputPaths, fmt.Sprintf("lumberjack:%s", config.FilePath))
-	}
-
-	if config.StdoutEnabled {
-		zapConfig.OutputPaths = append(zapConfig.OutputPaths, "stdout")
-	}
-	if config.TimestampFormat != "" {
-		encoderCfg := zap.NewProductionEncoderConfig()
-		switch config.TimestampFormat {
-		case "RFC3339":
-			encoderCfg.EncodeTime = zapcore.RFC3339TimeEncoder
-		case "ISO8601":
-			encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-		case "EpochMillis":
-			encoderCfg.EncodeTime = EpochMillisTimeEncoder
+		// Configure screen output
+		screenLevel, err := logrus.ParseLevel(config.AppConfig.Log.ScreenLevel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid screen log level '%s', defaulting to info: %v\n", config.AppConfig.Log.ScreenLevel, err)
+			screenLevel = logrus.InfoLevel
 		}
-		encoderCfg.TimeKey = "log_time_stamp"
-		encoderCfg.LevelKey = "log_level"
-		encoderCfg.MessageKey = "log_message"
-		encoderCfg.CallerKey = "function_name"
-		encoderCfg.EncodeLevel = zapcore.CapitalLevelEncoder
-		zapConfig.EncoderConfig = encoderCfg
-	}
-	if config.Level != "" {
-		if err := zapConfig.Level.UnmarshalText([]byte(strings.ToLower(config.Level))); err != nil {
-			return nil, errors.Errorf("Unable to parse log level from config %s: %s", config.Level, err.Error())
-		}
-	}
-	return &zapConfig, nil
-}
+		Logger.SetOutput(os.Stdout) // Default output to screen
+		Logger.SetLevel(screenLevel)
 
-// New - logging started
-//
-// param: config
-// param: zapConfig
-// return: zap.logger
-// return: function
-// return: error
-func New(config *Config, zapConfig *zap.Config) (*zap.Logger, func(), error) {
-	err := zap.RegisterSink("lumberjack", func(u *url.URL) (zap.Sink, error) {
-		return lumberjackSink{
-			Logger: &lumberjack.Logger{
-				Filename: config.FilePath,
-				// in megabytes
-				MaxSize:  1,
-				MaxAge:   1,
-				Compress: config.CompressionEnabled,
-			},
-		}, nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	logger, err := zapConfig.Build()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	logger = logger.With(
-		zap.String("service_name", config.ServiceName),
-	)
-	stop := func() {
-		defer func() {
-			if err := recover(); err != nil {
-				logger.Error("Panic while syncing zap logger")
-			}
-		}()
-		if logger != nil {
-			err := logger.Sync()
+		// Configure file output if a file path is provided
+		if config.AppConfig.Log.FilePath != "" {
+			fileLevel, err := logrus.ParseLevel(config.AppConfig.Log.FileLevel)
 			if err != nil {
-				return
+				fmt.Fprintf(os.Stderr, "Invalid file log level '%s', defaulting to debug: %v\n", config.AppConfig.Log.FileLevel, err)
+				fileLevel = logrus.DebugLevel
 			}
+
+			// Ensure the directory exists
+			logDir := ""
+			lastSlash := strings.LastIndex(config.AppConfig.Log.FilePath, "/")
+			if lastSlash != -1 {
+				logDir = config.AppConfig.Log.FilePath[:lastSlash]
+				if err := os.MkdirAll(logDir, 0755); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to create log directory '%s': %v\n", logDir, err)
+					return // Don't proceed with file logging if directory creation fails
+				}
+			}
+
+			logFile, err := os.OpenFile(config.AppConfig.Log.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to open log file '%s': %v\n", config.AppConfig.Log.FilePath, err)
+				return // Don't proceed with file logging
+			}
+
+			// Create a multi-writer to send logs to both screen and file
+			mw := io.MultiWriter(os.Stdout, logFile)
+			Logger.SetOutput(mw)
+
+			// Set the highest log level among screen and file for the logger itself.
+			// Logrus only supports one global level. We'll filter the output for
+			// screen and file individually by setting hooks or by creating
+			// separate loggers if more granular control is needed.
+			// For simplicity, we'll use the higher of the two levels.
+			if fileLevel < screenLevel {
+				Logger.SetLevel(fileLevel)
+			} else {
+				Logger.SetLevel(screenLevel)
+			}
+
+			// To achieve separate log levels for screen and file with a single Logrus instance,
+			// you'd typically use a hook.
+			// This example demonstrates how to set up the multi-writer and a single level.
+			// For truly separate levels, you'd need custom hooks for each output.
+			// Alternatively, you could have two separate logrus instances, one for screen and one for file.
+			// For this example, we'll demonstrate a simplified approach.
+
+			// If you truly need separate levels, you'd do something like this (more complex):
+			// Logger.AddHook(&ScreenLevelHook{Levels: []logrus.Level{logrus.InfoLevel, logrus.WarnLevel, logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}})
+			// Logger.AddHook(&FileLevelHook{Levels: []logrus.Level{logrus.DebugLevel, logrus.InfoLevel, logrus.WarnLevel, logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}})
 		}
-	}
-	return logger, stop, nil
+	})
 }
 
-// EpochMillisTimeEncoder - epoch encoder
-//
-// param: t
-// param: enc
-func EpochMillisTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-	nanos := t.UnixNano()
-	millis := nanos / int64(time.Millisecond)
-	enc.AppendInt64(millis)
+// Logrus levels: Trace, Debug, Info, Warn, Error, Fatal, Panic
+// We'll expose the common ones.
+
+func Debug(args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.DebugLevel) {
+		Logger.Debug(args...)
+	}
 }
+
+func Info(args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.InfoLevel) {
+		Logger.Info(args...)
+	}
+}
+
+func Warn(args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.WarnLevel) {
+		Logger.Warn(args...)
+	}
+}
+
+func Error(args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.ErrorLevel) {
+		Logger.Error(args...)
+	}
+}
+
+func Fatal(args ...interface{}) {
+	Logger.Fatal(args...)
+}
+
+// Fprintf variations for structured logging
+func Debugf(format string, args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.DebugLevel) {
+		Logger.Debugf(format, args...)
+	}
+}
+
+func Infof(format string, args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.InfoLevel) {
+		Logger.Infof(format, args...)
+	}
+}
+
+func Warnf(format string, args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.WarnLevel) {
+		Logger.Warnf(format, args...)
+	}
+}
+
+func Errorf(format string, args ...interface{}) {
+	if Logger.IsLevelEnabled(logrus.ErrorLevel) {
+		Logger.Errorf(format, args...)
+	}
+}
+
+func Fatalf(format string, args ...interface{}) {
+	Logger.Fatalf(format, args...)
+}
+
+// NOTE: For truly separate log levels for screen and file,
+// you would typically need to implement `logrus.Hook` for each output.
+// A simpler approach for the scope of this example is to set the
+// *global* log level of the Logrus instance to the most permissive
+// of the two (e.g., if screen is INFO and file is DEBUG, the global
+// level should be DEBUG). Then, within the hook or before writing
+// to the specific output, you would filter based on the desired level
+// for that output.

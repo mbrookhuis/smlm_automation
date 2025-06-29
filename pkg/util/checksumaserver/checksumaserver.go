@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	fileSpacecmd      = "/root/.spacecmd/config"
+	fileSpacecmd      = "/root/.spacecmd/inputfile"
 	fileSumaPrimary   = "/root/suma_primary"
 	fileSumaSecondary = "/root/suma_secondary"
 )
