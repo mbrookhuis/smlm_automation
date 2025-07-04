@@ -2,13 +2,14 @@ package dosmlm
 
 import (
 	"github.com/spf13/cobra"
-	logging "smlm_automation/pkg/util/logger"
+	log "smlm_automation/pkg/util/logger"
+	// logging "smlm_automation/pkg/util/logger"
 )
 
 var doSystemCmd = &cobra.Command{
-	Use:   "doSystemCmd",
-	Short: "doSystemCmd set SMLM general configuration",
-	Long:  `doSystemCmd set SMLM general configuration`,
+	Use:   "do-system",
+	Short: "do-system set SMLM general configuration",
+	Long:  `do-system set SMLM general configuration`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return executeDoSystem()
 	},
@@ -19,7 +20,8 @@ func init() {
 }
 
 func executeDoSystem() error {
-	logging.Debug("doSystem called")
+	log.Debug("doSystem called")
+	log.Infof("Password  :  %s\n", AppConfig.System.AdminPassword)
 
 	return nil
 }
